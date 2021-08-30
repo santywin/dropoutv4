@@ -1,0 +1,275 @@
+#import downDB
+import get_estudiantes
+import get_calificaciones
+import calcVar
+import final as finalpy
+#import predRF
+import pandas as pd
+import predict
+import predictEnsemble
+import stats_pred
+from sqlalchemy import create_engine
+#import psycopg2, psycopg2.extras
+from numpy import inf
+import numpy as np
+import features
+import os      
+import warnings
+warnings.filterwarnings("ignore")
+#Cambiar para marcar el semestre de graduados
+SEMESTRE_GRADUADOS = 4
+
+file = 'estudiantes.csv'
+estudiantes = pd.read_csv(file)
+file = 'calificaciones.csv'
+calificaciones = pd.read_csv(file, encoding = "ISO-8859-1")
+
+estudiantes.info(memory_usage='deep')
+calificaciones.info(memory_usage='deep')
+
+calificaciones.loc[calificaciones['semestre_en_carrera']>calificaciones['semestre_cursa'],'semestre_cursa'] = calificaciones['semestre_en_carrera']
+
+#Etiquetamos a los graduados
+estudiantes.loc[estudiantes["minnivel"] >= SEMESTRE_GRADUADOS, "graduado"] = "S"
+estudiantes.drop("minnivel",1,inplace = True)
+
+print("Prediciendo Dropout...\n")
+#estudiantes,calificaciones = downDB.download()
+print("Archivos descargados de BD\n")
+print("Número total de estudiantes: " + str(estudiantes.id.count()))
+print("Número total de estudiantes en el historial: "+ str(calificaciones.drop_duplicates(subset = 'id').id.count()))
+cambioEstudiante = get_estudiantes.cambioEst(estudiantes)
+cambioHistorial = get_calificaciones.cambCal(calificaciones)
+cambioHistorial = cambioHistorial.sort_values(["id","codigo_carrera","semestre_cursa"])
+#Asignaturas reprobadas con 0 no se toman en cuenta
+cambioHistorial = cambioHistorial[cambioHistorial['nota_final']!=0]
+#Quitamos alumnos sin primer semestre
+"""
+listaid = []
+for i in range(len(cambioHistorial['id'])):
+    if cambioHistorial['id'].values[i] != cambioHistorial['id'].values[i-1] and cambioHistorial['semestre_cursa'].values[i] != 1:
+        #cambioHistorial = cambioHistorial[cambioHistorial['id'] != cambioHistorial['id'].values[i]]
+        listaid.append(cambioHistorial['id'].values[i])
+
+#cambioEstudiante.columns = ["codigo_carrera","nombre_carrera","genero","codigo_malla","total_horas_carrera","codigo_asignatura","id","DROPOUT"]
+#cambioHistorial.columns = ["id","codigo_asignatura","nota_final","estado_asignatura","numero_matricula","forma_aprobacion","codigo_carrera","total_horas_asignatura","anio_curso_asignatura","semestre_cursa","numero_creditos"]
+sinprimersem = cambioHistorial[cambioHistorial['id'].isin(listaid)]
+carrerasin = sinprimersem.groupby(["id","codigo_carrera"],as_index = False).count()
+carrerasin = carrerasin.groupby("codigo_carrera",as_index = False).id.count()
+cambioHistorial =cambioHistorial[~ cambioHistorial['id'].isin(listaid)]
+"""
+#NÃºmero de semestres que lleva cursando cada alumno
+asigxSem = cambioHistorial.groupby(["id","codigo_carrera","semestre_cursa"],as_index = False).codigo_asignatura.count()
+alumSem = asigxSem.groupby(["id","codigo_carrera"],as_index = False).count().drop("codigo_asignatura",1)
+alumSem.columns = ["id","codigo_carrera","Semestres"]
+
+#Cogemos los estudiantes del primer semestre
+primerSem = cambioHistorial.groupby(["id","codigo_carrera"], as_index = False).semestre_cursa.min().astype(object)
+cambioHistorial1Sem = cambioHistorial.merge(primerSem, on=['id','codigo_carrera','semestre_cursa'], how='inner')
+alum1Sem = alumSem[alumSem['Semestres'] == 1]
+al1Sem = alumSem[alumSem['Semestres'] >= 1]
+#Cogemos el primer y segundo semestre
+cambioHistorial2 = pd.concat([cambioHistorial, cambioHistorial1Sem]).drop_duplicates(keep=False)
+segSem = cambioHistorial2.groupby(["id","codigo_carrera"], as_index = False).semestre_cursa.min().astype(object)
+cambioHistorial2Sem = cambioHistorial.merge(segSem, on=['id','codigo_carrera','semestre_cursa'], how='inner')
+cambioHistorial12Sem = pd.concat([cambioHistorial1Sem, cambioHistorial2Sem])
+alum2Sem = alumSem[alumSem['Semestres'] == 2]
+al2Sem = alumSem[alumSem['Semestres'] >= 2]
+#Primer, segundo y tercer semestre
+cambioHistorial3 = pd.concat([cambioHistorial, cambioHistorial12Sem]).drop_duplicates(keep=False)
+terSem = cambioHistorial3.groupby(["id","codigo_carrera"], as_index = False).semestre_cursa.min().astype(object)
+cambioHistorial3Sem = cambioHistorial.merge(terSem, on=['id','codigo_carrera','semestre_cursa'], how='inner')
+cambioHistorial123Sem = pd.concat([cambioHistorial12Sem, cambioHistorial3Sem])
+alum3Sem = alumSem[alumSem['Semestres'] == 3]
+al3Sem = alumSem[alumSem['Semestres'] >= 3]
+#Primer, segundo, tercer y cuarto semestre
+cambioHistorial4 = pd.concat([cambioHistorial, cambioHistorial123Sem]).drop_duplicates(keep=False)
+cuatSem = cambioHistorial4.groupby(["id","codigo_carrera"], as_index = False).semestre_cursa.min().astype(object)
+cambioHistorial4Sem = cambioHistorial.merge(cuatSem, on=['id','codigo_carrera','semestre_cursa'], how='inner')
+cambioHistorial1234Sem = pd.concat([cambioHistorial123Sem, cambioHistorial4Sem])
+alum4Sem = alumSem[alumSem['Semestres'] == 4]
+al4Sem = alumSem[alumSem['Semestres'] >= 4]
+#Primer, segundo, tercer, cuarto y quinto semestre
+cambioHistorial5 = pd.concat([cambioHistorial, cambioHistorial1234Sem]).drop_duplicates(keep=False)
+quinSem = cambioHistorial5.groupby(["id","codigo_carrera"], as_index = False).semestre_cursa.min().astype(object)
+cambioHistorial5Sem = cambioHistorial.merge(quinSem, on=['id','codigo_carrera','semestre_cursa'], how='inner')
+cambioHistorial12345Sem = pd.concat([cambioHistorial1234Sem, cambioHistorial5Sem])
+alum5Sem = alumSem[alumSem['Semestres'] == 5]
+al5Sem = alumSem[alumSem['Semestres'] >= 5]
+#Alumnos a partir de 5 semestre
+alumMas5Sem = alumSem[alumSem['Semestres'] > 5]
+
+
+resultados = pd.DataFrame()
+datosBD = pd.DataFrame()
+carrerasSinActivos = ""
+carrerasSinActivosAUC = ""
+abandonoXSem = pd.DataFrame()
+abandonoXSem['carrera'] = cambioEstudiante['nombre_carrera'].drop_duplicates().dropna()
+abandonoXSem.set_index('carrera',inplace = True)
+gradXSem = pd.DataFrame()
+gradXSem['carrera'] = cambioEstudiante['nombre_carrera'].drop_duplicates().dropna()
+gradXSem.set_index('carrera',inplace = True)
+correlation = {}
+featureSelectionRF = {}
+featureSelection = {}
+stats = pd.DataFrame(index='Accuracy AUC Log_loss'.split())
+
+carreras = pd.DataFrame(estudiantes['nombre_carrera'].drop_duplicates().dropna())
+try:
+    os.mkdir('Archivos')
+except:
+    pass
+for carrera in carreras['nombre_carrera']:
+    try:
+        os.mkdir('Archivos/' + carrera)
+    except:
+        pass
+#%%
+for i in range(6):
+    if i == 0:
+        print("Semestre 1")
+        cambioHistorial1Sem = cambioHistorial1Sem.copy()
+        cambioHistorialSemActual = cambioHistorial1Sem.copy()
+        alum1Sem = alum1Sem.copy()
+        al1Sem = al1Sem.copy()
+    elif i == 1:
+        print("Semestre 2")
+        cambioHistorial1Sem = cambioHistorial12Sem.copy()
+        cambioHistorialSemActual = cambioHistorial2Sem.copy()
+        alum1Sem = alum2Sem.copy()
+        al1Sem = al2Sem.copy()
+    elif i == 2:
+        print("Semestre 3")
+        cambioHistorial1Sem = cambioHistorial123Sem.copy()
+        cambioHistorialSemActual = cambioHistorial3Sem.copy()
+        alum1Sem = alum3Sem.copy()
+        al1Sem = al3Sem.copy()
+    elif i == 3:
+        print("Semestre 4")
+        cambioHistorial1Sem = cambioHistorial1234Sem.copy()
+        cambioHistorialSemActual = cambioHistorial4Sem.copy()
+        alum1Sem = alum4Sem.copy()
+        al1Sem = al4Sem.copy()
+    elif i == 4:
+        print("Semestre 5")
+        cambioHistorial1Sem = cambioHistorial12345Sem.copy()
+        cambioHistorialSemActual = cambioHistorial5Sem.copy()
+        alum1Sem = alum5Sem.copy()
+        al1Sem = al5Sem.copy()
+    elif i == 5:
+        print("Semestre 6")
+        cambioHistorial1Sem = cambioHistorial.copy()
+        cambioHistorialSemActual = cambioHistorial5Sem.copy()
+        alum1Sem = alumMas5Sem.copy()
+        al1Sem = al5Sem.copy()
+    dropout, dataMedia, credPass = calcVar.calcular(cambioHistorial,cambioEstudiante,cambioHistorial1Sem,cambioHistorialSemActual)
+    dropout = dropout.reset_index(level=['id', 'codigo_carrera'])
+    print("Variables de entrada calculadas\n")   
+    final = finalpy.finalData(dataMedia, cambioEstudiante, credPass,dropout)
+    final = final.drop_duplicates(subset = "id")
+    print("Datos finales listos\n")
+    carreras = pd.DataFrame(final['nombre_carrera'])
+    carreras = carreras.drop_duplicates().dropna()
+    abandonoXSem['dropoutSem'+str(i+1)] = 0
+    gradXSem['gradSem'+str(i+1)] = 0                                    
+    final.dropout = final.dropout.astype(str)
+    #Se han observado muchos alumnos que han abandonado pero no por temas academicos
+    dropoutNoAcad = final[((final['rateAprobadas']>=0.95) & (final['dropout'] == "0"))]    
+    dropoutNoAcad =  dropoutNoAcad.merge(alum1Sem, on=['id','codigo_carrera'], how='inner')
+    datosBD = pd.concat([datosBD, dropoutNoAcad],axis = 0)  
+    final = final[~((final['rateAprobadas']>=0.95) & (final['dropout'] == "0"))]
+    #Quitamos los alumnos que hayan abandonado ya (mejor para la predicción final puesto que predice valores más bajos 
+    #de abandono pero peor para las estadísticas)
+    """
+    final1 = final[final['dropout']== "0"]
+    final1 = final1.merge(al1Sem, on=['id','codigo_carrera'], how='inner')
+    final2 = final[final['dropout']!= "0"]
+    final = pd.concat([final1,final2],ignore_index = True).drop("Semestres",1)
+    """    
+    #final.loc[final['porcentaje_carrera']>=np.mean(final['porcentaje_carrera']*2),'dropout'] = "0"
+    for carrera in carreras['nombre_carrera']:
+        print("\n#####################################################################\n")
+        print("\n"+carrera + str(i+1) +"\n")
+        try:
+            os.mkdir('Archivos/' + carrera + '/' + carrera + str(i+1))
+        except:
+            pass
+        #carrera = "BIOQUIMICA Y FARMACIA-REDISEÑO"
+        #carrera = "INGENIERIA INDUSTRIAL-REDISEÑO"
+        #carrera = "INGENIERÍA CIVIL"
+        #print(carrera + str(i+1))
+        """
+        try:
+            featureSelection[carrera + "" +str(i+1)] = features.selection(final, carrera)
+            resultados[carrera + "" +str(i+1)], metricas,correlation[carrera + "" +str(i+1)] = predRF.predictStat(final, carrera)
+        except:
+            print("Error")  
+            resultados[carrera + "" +str(i+1)] = -1
+            carrerasSinActivosAUC = carrerasSinActivosAUC + carrera + ","
+        """
+        try:
+            final = final.fillna(0)            
+            final = final.replace([np.inf, -np.inf], 0)
+            featureSelection[carrera + "" +str(i+1)] = features.selection(final, carrera, i)
+            accuracy, auc_stat, log_loss, description = stats_pred.statistics(final, carrera)
+            description.to_excel('Archivos/' + carrera + '/' + carrera + str(i+1) + '/' + "description.xlsx")
+            stats[carrera + "" +str(i+1)] = 0.1
+            stats[carrera + "" +str(i+1)]["Accuracy"] = accuracy
+            stats[carrera + "" +str(i+1)]["AUC"] = auc_stat
+            stats[carrera + "" +str(i+1)]["Log_loss"] = log_loss
+        except:
+            stats[carrera + "" +str(i+1)] = 0.0   
+            print("Error")
+        try:
+            #featureSelectionRF[carrera + "" +str(i+1)] = features.selection(finalTot, carrera)
+            #finalData1 = predict.predict(final, carrera)
+            finalData1 = predictEnsemble.predict(final, carrera, i)
+            finalData1 =  finalData1.merge(alum1Sem, on=['id','codigo_carrera'], how='inner')
+            abandSemX = finalData1[finalData1['dropout'] == 0]            
+            gradSemX = finalData1[finalData1['dropout'] == 1]             
+            abandonoXSem['dropoutSem'+str(i+1)][carrera] = abandSemX['id'].count()
+            gradXSem['gradSem'+str(i+1)][carrera] = gradSemX['id'].count()
+            finalData1['Accuracy'] = accuracy
+            datosBD = pd.concat([datosBD, finalData1],axis = 0)
+        except:
+            print("Error predict")   
+            carrerasSinActivos = carrerasSinActivos  + carrera+ str(i+1)+ ","
+            final1 = final[final["nombre_carrera"] == carrera]
+            final1["codigo_carrera"] =  final1["codigo_carrera"].astype(int)
+            final1 =  final1.merge(alum1Sem, on=['id','codigo_carrera'], how='inner')
+            final1['Accuracy'] = 0.1
+            datosBD = pd.concat([datosBD, final1],axis = 0, sort = True)
+                             
+datosBD["dropout"] = datosBD["dropout"].replace("3","0").astype(str)
+#%%
+datosBD.rename(columns={'rate':'dropoutCarrera'}, inplace=True)
+datosBD.rename(columns={'dropout':'dropout_RF'}, inplace=True)
+datosBD.rename(columns={'dropout_avrg':'dropout'}, inplace=True)
+datosBD.drop_duplicates(subset='id', inplace =True)
+datosBD["dropout"] = datosBD["dropout"].fillna(0).astype(str)
+datosBD["dropout_RF"] = datosBD["dropout_RF"].fillna(-999).astype(str)
+#datosBD.loc[(datosBD["dropout_RF"] == "0") & (datosBD["dropout"] == ""),"dropout"] = "0"
+datosBD.loc[(datosBD["dropout_RF"] == "1") & (datosBD["dropout"] == "0.0"),"dropout"] = "1"
+#datosBD.loc[(datosBD["dropout_RF"] == "0.0") & (datosBD["dropout"] == "-999"),"dropout"] = "0"
+
+#%%
+##Subimos resultados a la base de datos
+print("Subiendo probabilidad de abandono")
+"""
+abandonoXSem['carreras'] = abandonoXSem.index
+engine = create_engine('postgresql://usuario:contraseña@IP:puerto/nombreBD')
+datosBD.to_sql('nombretabla', engine,if_exists = 'replace', index=False)
+abandonoXSem.to_sql('nombretabla', engine,if_exists = 'replace', index=False)
+"""
+print("Predicción acabada.")
+try:
+    os.mkdir('Resultados/')
+except:
+    pass
+stats.to_excel("Resultados/metricas.xlsx")
+datosBD[["id","codigo_carrera","Semestres","anio_curso_asignatura","rateReprobadas","rateAprobadas","mediaAPRP","mediaAP","segMatActual","terMatActual","terMatTot","dropout", "dropout_bag", "dropout_avrg", "dropout_calibrated"]].to_excel("Resultados/predicciones.xlsx")
+abandonoXSem.reset_index(level=0, inplace=True)
+abandonoXSem.to_excel("Resultados/dropoutNumberPerSemesterAndDegree.xlsx")
+gradXSem.reset_index(level=0, inplace=True)
+gradXSem.to_excel("Resultados/graduateNumberPerSemesterAndDegree.xlsx")
